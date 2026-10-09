@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "808522670528",
+    "project_id": "tuyen-duong-thong-minh",
+    "storage_bucket": "tuyen-duong-thong-minh.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:808522670528:android:7acdfa55a3b2199e7b6825",
+        "android_client_info": {
+          "package_name": "com.example.tuyen_duong_thong_minh"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCOJ56J02ZMipmsn1nV6CSnbAjJHZncsx0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

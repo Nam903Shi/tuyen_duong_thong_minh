@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
+import 'package:geolocator/geolocator.dart';
 import 'main.dart';
 
 class TrangChu extends StatefulWidget {
@@ -16,20 +18,171 @@ class _TrangChuState extends State<TrangChu> {
   final MapController _mapController = MapController();
   final TextEditingController _timKiemCtrl = TextEditingController();
 
-  // Tâm bản đồ đặt chính giữa khu vực phường Bình Minh
   final LatLng _toaDoTrungTam = const LatLng(11.3850, 106.1350);
   LatLng? _viTriTimKiem;
   bool _laBanDoVeTinh = false;
   bool _dangTimKiem = false;
+  bool _dangLayViTri = false;
+
+  final _formKey = GlobalKey<FormState>();
+  String _loaiDoiTuong = 'Nhà dân';
+  final TextEditingController _chiTietCtrl = TextEditingController();
+
+  Future<void> _layViTriHienTai() async {
+    setState(() => _dangLayViTri = true);
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Vui lòng bật GPS!'),
+              backgroundColor: Colors.orange));
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
+      }
+      if (permission == LocationPermission.deniedForever) return;
+
+      Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high);
+      LatLng toaDoHienTai = LatLng(position.latitude, position.longitude);
+
+      setState(() {
+        _viTriTimKiem = toaDoHienTai;
+      });
+      _mapController.move(toaDoHienTai, 18.0);
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Lỗi: $e'), backgroundColor: Colors.red));
+    } finally {
+      if (mounted) setState(() => _dangLayViTri = false);
+    }
+  }
+
+  void _hienThiFormNhapLieu() {
+    if (_viTriTimKiem == null) return;
+    _chiTietCtrl.clear();
+    _loaiDoiTuong = 'Nhà dân';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+            left: 20,
+            right: 20,
+            top: 20,
+          ),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Cập nhật dữ liệu Hạ tầng',
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green)),
+                const SizedBox(height: 15),
+                DropdownButtonFormField<String>(
+                  value: _loaiDoiTuong,
+                  decoration: const InputDecoration(
+                      labelText: 'Loại đối tượng',
+                      border: OutlineInputBorder()),
+                  items: [
+                    'Nhà dân',
+                    'Trụ đèn chiếu sáng',
+                    'Cây xanh đô thị',
+                    'Khác'
+                  ].map((String value) {
+                    return DropdownMenuItem<String>(
+                        value: value, child: Text(value));
+                  }).toList(),
+                  onChanged: (newValue) {
+                    setState(() {
+                      _loaiDoiTuong = newValue!;
+                    });
+                  },
+                ),
+                const SizedBox(height: 15),
+                TextFormField(
+                  controller: _chiTietCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Thông tin chi tiết',
+                    hintText: 'VD: Số nhà 123, Đường A / Trụ đèn số 5...',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) =>
+                      value!.isEmpty ? 'Vui lòng nhập thông tin' : null,
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white),
+                    icon: const Icon(Icons.cloud_upload),
+                    label: const Text('Lưu lên hệ thống',
+                        style: TextStyle(fontSize: 16)),
+                    onPressed: () async {
+                      if (_formKey.currentState!.validate()) {
+                        try {
+                          await FirebaseFirestore.instance
+                              .collection('ha_tang')
+                              .add({
+                            'loai': _loaiDoiTuong,
+                            'chi_tiet': _chiTietCtrl.text.trim(),
+                            'toa_do': GeoPoint(_viTriTimKiem!.latitude,
+                                _viTriTimKiem!.longitude),
+                            'ngay_tao': FieldValue.serverTimestamp(),
+                            'nguoi_tao':
+                                FirebaseAuth.instance.currentUser?.email ??
+                                    'Cán bộ chưa rõ',
+                          });
+                          if (mounted) {
+                            Navigator.pop(context);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                    content: Text('Lưu thành công!'),
+                                    backgroundColor: Colors.green));
+                            setState(() => _viTriTimKiem = null);
+                          }
+                        } catch (e) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                content: Text('Lỗi: $e'),
+                                backgroundColor: Colors.red));
+                        }
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 
   Future<LatLng?> _timQuaArcGIS(String query) async {
     try {
       String encoded = Uri.encodeComponent(query);
       String url =
-          "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
-          "?SingleLine=$encoded"
-          "&searchExtent=106.0480,11.3220,106.2050,11.4520"
-          "&countryCode=VNM&maxLocations=1&f=json";
+          "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?SingleLine=$encoded&searchExtent=106.0480,11.3220,106.2050,11.4520&countryCode=VNM&maxLocations=1&f=json";
       final res =
           await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
       if (res.statusCode == 200) {
@@ -67,43 +220,28 @@ class _TrangChuState extends State<TrangChu> {
   Future<void> _xuLyTimKiemDiaChi() async {
     String tuKhoa = _timKiemCtrl.text.trim();
     if (tuKhoa.isEmpty) return;
-
     setState(() => _dangTimKiem = true);
     FocusScope.of(context).unfocus();
-
     try {
       LatLng? ketQua =
           await _timQuaArcGIS('$tuKhoa, Bình Minh, Tây Ninh, Việt Nam');
       ketQua ??= await _timQuaArcGIS('$tuKhoa, Tây Ninh, Việt Nam');
       ketQua ??= await _timQuaPhoton('$tuKhoa, Tây Ninh');
-
       if (ketQua != null) {
         setState(() {
           _viTriTimKiem = ketQua;
         });
         _mapController.move(_viTriTimKiem!, 16.5);
       } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Không tìm thấy "$tuKhoa". Anh có thể chạm trực tiếp vào bản đồ để ghim vị trí!',
-              ),
-              backgroundColor: Colors.orange,
-              duration: const Duration(seconds: 5),
-            ),
-          );
-        }
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Không tìm thấy. Hãy chạm vào bản đồ!'),
+              backgroundColor: Colors.orange));
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Lỗi kết nối mạng: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+            SnackBar(content: Text('Lỗi: $e'), backgroundColor: Colors.red));
     } finally {
       if (mounted) setState(() => _dangTimKiem = false);
     }
@@ -111,30 +249,27 @@ class _TrangChuState extends State<TrangChu> {
 
   Future<void> _dangXuat() async {
     await FirebaseAuth.instance.signOut();
-    if (mounted) {
+    if (mounted)
       Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const ManHinhDangNhapCanBo()),
-      );
-    }
+          context,
+          MaterialPageRoute(
+              builder: (context) => const ManHinhDangNhapCanBo()));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Bản Đồ Quản Trị Phường Bình Minh',
-          style: TextStyle(
-              fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-        ),
+        title: const Text('Bản Đồ Quản Trị',
+            style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.white)),
         backgroundColor: Colors.green,
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout, color: Colors.white),
-            onPressed: _dangXuat,
-            tooltip: 'Đăng xuất',
-          ),
+              icon: const Icon(Icons.logout, color: Colors.white),
+              onPressed: _dangXuat)
         ],
       ),
       body: Stack(
@@ -146,7 +281,6 @@ class _TrangChuState extends State<TrangChu> {
               initialZoom: 13.5,
               interactionOptions:
                   const InteractionOptions(flags: InteractiveFlag.all),
-              // Chạm vào bất kỳ điểm nào trên bản đồ để cắm ghim đỏ vị trí cần quản lý
               onTap: (tapPosition, point) {
                 FocusScope.of(context).unfocus();
                 setState(() {
@@ -160,7 +294,6 @@ class _TrangChuState extends State<TrangChu> {
                     ? 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'
                     : 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
               ),
-              // Chỉ hiển thị marker ghim đỏ khi người dùng thực hiện tìm kiếm hoặc chạm trực tiếp lên bản đồ
               if (_viTriTimKiem != null)
                 MarkerLayer(
                   markers: [
@@ -181,21 +314,20 @@ class _TrangChuState extends State<TrangChu> {
             right: 16,
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: const [
-                  BoxShadow(
-                      color: Colors.black26,
-                      blurRadius: 8,
-                      offset: Offset(0, 3))
-                ],
-              ),
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: const [
+                    BoxShadow(
+                        color: Colors.black26,
+                        blurRadius: 8,
+                        offset: Offset(0, 3))
+                  ]),
               child: TextField(
                 controller: _timKiemCtrl,
                 textInputAction: TextInputAction.search,
                 onSubmitted: (value) => _xuLyTimKiemDiaChi(),
                 decoration: InputDecoration(
-                  hintText: 'Tìm đường, địa điểm tại Bình Minh...',
+                  hintText: 'Tìm đường, địa điểm...',
                   border: InputBorder.none,
                   contentPadding:
                       const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
@@ -203,12 +335,10 @@ class _TrangChuState extends State<TrangChu> {
                       ? const Padding(
                           padding: EdgeInsets.all(12.0),
                           child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.green),
-                        )
+                              strokeWidth: 2, color: Colors.green))
                       : IconButton(
                           icon: const Icon(Icons.search, color: Colors.green),
-                          onPressed: _xuLyTimKiemDiaChi,
-                        ),
+                          onPressed: _xuLyTimKiemDiaChi),
                 ),
               ),
             ),
@@ -220,12 +350,9 @@ class _TrangChuState extends State<TrangChu> {
               heroTag: 'map_layer',
               backgroundColor: Colors.white,
               mini: true,
-              tooltip: 'Đổi lớp bản đồ Giao thông / Vệ tinh',
               onPressed: () => setState(() => _laBanDoVeTinh = !_laBanDoVeTinh),
-              child: Icon(
-                _laBanDoVeTinh ? Icons.map : Icons.satellite_alt,
-                color: Colors.green,
-              ),
+              child: Icon(_laBanDoVeTinh ? Icons.map : Icons.satellite_alt,
+                  color: Colors.green),
             ),
           ),
           Positioned(
@@ -234,15 +361,36 @@ class _TrangChuState extends State<TrangChu> {
             child: FloatingActionButton(
               heroTag: 'map_center',
               backgroundColor: Colors.white,
-              tooltip: 'Về trung tâm Bình Minh',
-              onPressed: () {
-                _mapController.move(_toaDoTrungTam, 13.5);
-                setState(() => _viTriTimKiem = null);
-                _timKiemCtrl.clear();
-              },
-              child: const Icon(Icons.my_location, color: Colors.blue),
+              onPressed: _dangLayViTri ? null : _layViTriHienTai,
+              child: _dangLayViTri
+                  ? const Padding(
+                      padding: EdgeInsets.all(12.0),
+                      child: CircularProgressIndicator(
+                          strokeWidth: 3, color: Colors.blue))
+                  : const Icon(Icons.my_location, color: Colors.blue),
             ),
           ),
+          if (_viTriTimKiem != null)
+            Positioned(
+              bottom: 20,
+              left: 16,
+              right: 80,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30)),
+                  elevation: 5,
+                ),
+                icon: const Icon(Icons.add_location_alt, size: 24),
+                label: const Text('Lưu thông tin tại đây',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                onPressed: _hienThiFormNhapLieu,
+              ),
+            ),
         ],
       ),
     );
